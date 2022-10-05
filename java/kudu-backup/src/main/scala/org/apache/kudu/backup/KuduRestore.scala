@@ -23,8 +23,13 @@ import org.apache.kudu.client.Partition
 import org.apache.kudu.client.SessionConfiguration.FlushMode
 import org.apache.kudu.spark.kudu.KuduContext
 import org.apache.kudu.spark.kudu.RowConverter
+import org.apache.spark.rdd.RDD
+import org.apache.spark.sql.Row
 import org.apache.spark.sql.DataFrame
 import org.apache.spark.sql.SparkSession
+import org.apache.spark.sql.types.StructType
+import org.apache.spark.sql.catalyst.util.TypeUtils
+import org.apache.spark.Partitioner
 import org.apache.yetus.audience.InterfaceAudience
 import org.apache.yetus.audience.InterfaceStability
 import org.slf4j.Logger
@@ -93,9 +98,22 @@ object KuduRestore {
       // Adjust for dropped and renamed columns.
       data = adjustSchema(data, metadata, lastMetadata, rowActionCol)
       val restoreSchema = data.schema
+  
+      // This avoids any corruption as reported in SPARK-26880.
+      var rdd = data.queryExecution.toRdd.mapPartitions { rows =>
+        val table = context.syncClient.openTable(restoreName)
+        val converter = new RowConverter(table.getSchema, restoreSchema, false)
+        rows.map(converter.toRow)
+      }
 
-      // Write the data to Kudu.
-      data.queryExecution.toRdd.foreachPartition { internalRows =>
+      // if (writeOptions.repartition) {
+        rdd = repartitionRows(options.numPartitionsForSparkTask,context,rdd, restoreName, restoreSchema,metadata, lastMetadata)
+      // }
+
+      log.info(s"real partitionCount: ${rdd.partitions.length}")
+      // Write the rows for each Spark partition.
+      // Second ShuffleMapStage 1 foreachPartition
+      rdd.foreachPartition { internalRows =>
         val table = context.syncClient.openTable(restoreName)
         val converter = new RowConverter(table.getSchema, restoreSchema, false)
         val partitioner = createPartitionFilter(metadata, lastMetadata)
@@ -108,7 +126,8 @@ object KuduRestore {
         try for (internalRow <- internalRows) {
           // Convert the InternalRows to Rows.
           // This avoids any corruption as reported in SPARK-26880.
-          val row = converter.toRow(internalRow)
+          // val row = converter.toRow(internalRow)
+          val row = internalRow
           // Get the operation type based on the row action column.
           // This will always be the last column in the row.
           val rowActionValue = row.getByte(row.length - 1)
@@ -302,6 +321,68 @@ object KuduRestore {
       }
     val partitionSchema = TableMetadata.getPartitionSchema(currentMetadata)
     new KuduPartitioner(partitionSchema, validTablets.asJava)
+  }
+
+  private def getPartitionCount(context: KuduContext,tableName: String): Int = {
+    val table = context.syncClient.openTable(tableName)
+    val partitioner = new KuduPartitioner.KuduPartitionerBuilder(table).build()
+    partitioner.numPartitions()
+  }
+  private def repartitionRows(
+    numPartitionsForSparkTask: Int,
+      context: KuduContext,
+      rdd: RDD[Row],
+      tableName: String,
+      schema: StructType,
+      currentMetadata: TableMetadataPB,
+      lastMetadata: TableMetadataPB): RDD[Row] = {
+
+    val partitionCount = if (numPartitionsForSparkTask > 1) {
+        numPartitionsForSparkTask
+    } else {
+        getPartitionCount(context,tableName)
+    }
+
+    val sparkPartitioner = new Partitioner {
+      override def numPartitions: Int = partitionCount
+      override def getPartition(key: Any): Int = {
+        key.asInstanceOf[(Int, Row)]._1
+      }
+    }
+    
+    // Key the rows by the Kudu partition index using the KuduPartitioner and the
+    // table's primary key. This allows us to re-partition and sort the columns.
+    // First ShuffleMapStage 0 (MapPartitionsRDD[3] 
+    val keyedRdd = rdd.mapPartitions { rows =>
+      val table = context.syncClient.openTable(tableName)
+      val converter = new RowConverter(table.getSchema, schema,false)
+      val partitioner = createPartitionFilter(currentMetadata, lastMetadata)
+      rows.map { row =>
+        val partialRow = converter.toPartialRow(row)
+        val partitionIndex = partitioner.partitionRow(partialRow)
+        ((partitionIndex, partialRow.encodePrimaryKey()), row)
+      }
+    }
+
+    // Define an implicit Ordering trait for the encoded primary key
+    // to enable rdd sorting functions below.
+    implicit val byteArrayOrdering: Ordering[Array[Byte]] = new Ordering[Array[Byte]] {
+      def compare(x: Array[Byte], y: Array[Byte]): Int = {
+        TypeUtils.compareBinary(x, y)
+      }
+    }
+    // Partition the rows by the Kudu partition index to ensure the Spark partitions
+    // match the Kudu partitions. This will make the number of Spark tasks match the number
+    // of Kudu partitions. Optionally sort while repartitioning.
+    // TODO: At some point we may want to support more or less tasks while still partitioning.
+    val shuffledRDD = if (true) {
+      keyedRdd.repartitionAndSortWithinPartitions(sparkPartitioner)
+    } else {
+      keyedRdd.partitionBy(sparkPartitioner)
+    }
+    
+    // Drop the partitioning key.
+    shuffledRDD.map { case (_, row) => row }
   }
 
   def main(args: Array[String]): Unit = {

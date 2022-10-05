@@ -189,12 +189,14 @@ case class RestoreOptions(
     createTables: Boolean = RestoreOptions.DefaultCreateTables,
     timestampMs: Long = System.currentTimeMillis(),
     failOnFirstError: Boolean = RestoreOptions.DefaultFailOnFirstError,
-    numParallelRestores: Int = RestoreOptions.DefaultNumParallelRestores)
+    numParallelRestores: Int = RestoreOptions.DefaultNumParallelRestores,
+    numPartitionsForSparkTask: Int = RestoreOptions.DefaultNumPartitionsForSparkTask)
 
 object RestoreOptions {
   val DefaultCreateTables: Boolean = true
   val DefaultFailOnFirstError = false
   val DefaultNumParallelRestores = 1
+  val DefaultNumPartitionsForSparkTask = 1
 
   val ClassName: String = KuduRestore.getClass.getCanonicalName.dropRight(1) // Remove trailing `$`
   val ProgramName: String = "spark-submit --class " + ClassName + " [spark-options] " +
@@ -243,6 +245,14 @@ object RestoreOptions {
             "the resources of parallel jobs. Overrides --failOnFirstError. This option is " +
             "experimental. Default: " + DefaultNumParallelRestores)
         .hidden()
+        .optional()
+      
+      opt[Int]("numPartitionsForSparkTask")
+        .action((v, o) => o.copy(numPartitionsForSparkTask = v))
+        .text(
+          "The number of spark tasks to restore. " +
+            "This option is " +
+            "experimental. Default: " + DefaultNumPartitionsForSparkTask)
         .optional()
 
       help("help").text("prints this usage text")
