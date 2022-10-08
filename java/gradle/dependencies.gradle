@@ -56,7 +56,7 @@ versions += [
     scalatest      : "3.0.7",
     scopt          : "3.7.1",
     slf4j          : "1.7.26",
-    spark          : "3.2.2",
+    spark          : "3.3.0",
     spotBugs       : "3.1.6",
     yetus          : "0.10.0"
 ]
