@@ -52,11 +52,11 @@ versions += [
     parquet        : "1.10.1",
     pmd            : "5.8.1",
     protobuf       : "3.7.1",
-    scala          : "2.11.12",
+    scala          : "2.12.15",
     scalatest      : "3.0.7",
     scopt          : "3.7.1",
     slf4j          : "1.7.26",
-    spark          : "2.4.3",
+    spark          : "3.2.2",
     spotBugs       : "3.1.6",
     yetus          : "0.10.0"
 ]

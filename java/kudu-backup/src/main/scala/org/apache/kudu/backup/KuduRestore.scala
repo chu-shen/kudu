@@ -28,8 +28,11 @@ import org.apache.spark.sql.Row
 import org.apache.spark.sql.DataFrame
 import org.apache.spark.sql.SparkSession
 import org.apache.spark.sql.types.StructType
-import org.apache.spark.sql.catalyst.util.TypeUtils
+import org.apache.spark.unsafe.types.ByteArray
 import org.apache.spark.Partitioner
+import org.apache.spark.resource.ExecutorResourceRequests
+import org.apache.spark.resource.ResourceProfile
+import org.apache.spark.resource.ResourceProfileBuilder
 import org.apache.yetus.audience.InterfaceAudience
 import org.apache.yetus.audience.InterfaceStability
 import org.slf4j.Logger
@@ -350,6 +353,14 @@ object KuduRestore {
       }
     }
     
+
+    val rprof = new ResourceProfileBuilder()
+    val eReq = new ExecutorResourceRequests()
+      .cores(2)
+      .memory("4096")
+      .memoryOverhead("2048")
+    val rp = rprof.require(eReq).build()
+
     // Key the rows by the Kudu partition index using the KuduPartitioner and the
     // table's primary key. This allows us to re-partition and sort the columns.
     // First ShuffleMapStage 0 (MapPartitionsRDD[3] 
@@ -362,13 +373,13 @@ object KuduRestore {
         val partitionIndex = partitioner.partitionRow(partialRow)
         ((partitionIndex, partialRow.encodePrimaryKey()), row)
       }
-    }
+    }.withResources(rp)
 
     // Define an implicit Ordering trait for the encoded primary key
     // to enable rdd sorting functions below.
     implicit val byteArrayOrdering: Ordering[Array[Byte]] = new Ordering[Array[Byte]] {
       def compare(x: Array[Byte], y: Array[Byte]): Int = {
-        TypeUtils.compareBinary(x, y)
+        ByteArray.compareBinary(x, y)
       }
     }
     // Partition the rows by the Kudu partition index to ensure the Spark partitions
