@@ -30,6 +30,7 @@ import org.apache.spark.sql.SparkSession
 import org.apache.spark.sql.types.StructType
 import org.apache.spark.unsafe.types.ByteArray
 import org.apache.spark.Partitioner
+import org.apache.spark.RangePartitioner
 import org.apache.spark.resource.ExecutorResourceRequests
 import org.apache.spark.resource.ResourceProfile
 import org.apache.spark.resource.ResourceProfileBuilder
@@ -340,20 +341,6 @@ object KuduRestore {
       currentMetadata: TableMetadataPB,
       lastMetadata: TableMetadataPB): RDD[Row] = {
 
-    val partitionCount = if (numPartitionsForSparkTask > 1) {
-        numPartitionsForSparkTask
-    } else {
-        getPartitionCount(context,tableName)
-    }
-
-    val sparkPartitioner = new Partitioner {
-      override def numPartitions: Int = partitionCount
-      override def getPartition(key: Any): Int = {
-        key.asInstanceOf[(Int, Row)]._1
-      }
-    }
-    
-
     val rprof = new ResourceProfileBuilder()
     val eReq = new ExecutorResourceRequests()
       .cores(2)
@@ -386,11 +373,7 @@ object KuduRestore {
     // match the Kudu partitions. This will make the number of Spark tasks match the number
     // of Kudu partitions. Optionally sort while repartitioning.
     // TODO: At some point we may want to support more or less tasks while still partitioning.
-    val shuffledRDD = if (true) {
-      keyedRdd.repartitionAndSortWithinPartitions(sparkPartitioner)
-    } else {
-      keyedRdd.partitionBy(sparkPartitioner)
-    }
+    val shuffledRDD = keyedRdd.repartitionAndSortWithinPartitions(new RangePartitioner(numPartitionsForSparkTask, keyedRdd))
     
     // Drop the partitioning key.
     shuffledRDD.map { case (_, row) => row }
